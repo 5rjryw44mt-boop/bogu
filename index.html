@@ -222,6 +222,7 @@ button:focus-visible{outline:2px solid var(--qing);outline-offset:2px}
       <div id="api-box">
         <label>模型服务</label>
         <select id="provider" onchange="onProvider()">
+          <option value="proxy">服务端已接入（Key 在服务器上，无需填写）</option>
           <option value="deepseek">DeepSeek（deepseek-chat）</option>
           <option value="qwen">通义千问（qwen-plus，兼容模式）</option>
           <option value="custom">自定义 OpenAI 兼容接口</option>
@@ -230,7 +231,7 @@ button:focus-visible{outline:2px solid var(--qing);outline-offset:2px}
         <input id="baseUrl" placeholder="https://api.deepseek.com">
         <label>模型名</label>
         <input id="model" placeholder="deepseek-chat">
-        <label>API Key</label>
+        <label id="key-label">API Key</label>
         <input id="apiKey" type="password" placeholder="sk-…" autocomplete="off">
       </div>
       <label>传说组（八仙）</label>
@@ -238,7 +239,7 @@ button:focus-visible{outline:2px solid var(--qing);outline-offset:2px}
       <label>形象（上传真图替换矢量像，存在本机浏览器）</label>
       <div class="arts" id="arts"></div>
       <div class="note">
-        <b>测试版说明：</b>Key 只保存在你这台设备的浏览器里，直接从浏览器调用模型接口。这只适合自己测试；对外发布前必须把调用放到后端（云函数），前端不能带 Key。<br>
+        <b>说明：</b>选「服务端已接入」时，模型 Key 放在服务器环境变量里，页面不接触 Key，可对外使用。其他选项是把 Key 存在你自己浏览器里直连模型，仅适合自测。<br>
         演示模式不联网，用内置原典拼出固定结构的回答，只用来看流程和界面。
       </div>
       <div class="row">
@@ -261,6 +262,7 @@ button:focus-visible{outline:2px solid var(--qing);outline-offset:2px}
 
 <canvas id="cv" width="750" height="1334" style="display:none"></canvas>
 
+<script src="config.js" onerror="void 0"></script>
 <script>
 /* ===================== 数据：六位圣贤 ===================== */
 const SAGES = [
@@ -1182,6 +1184,7 @@ const S = {
   busy:false
 };
 const PRESETS = {
+  proxy:{baseUrl:"/api",model:"server"},
   deepseek:{baseUrl:"https://api.deepseek.com",model:"deepseek-chat"},
   qwen:{baseUrl:"https://dashscope.aliyuncs.com/compatible-mode/v1",model:"qwen-plus"},
   custom:{baseUrl:"",model:""}
@@ -1394,7 +1397,7 @@ const HIST_RULE = `
 - 若事件发生在你身后，开头明说"这是我死后的事，我以我的眼光看"，然后照常评论。
 - 不评论 1949 年以后的中国政治事件，不评论任何在世人物；遇到就说"这超出了我能谈的范围"，并可以改谈这件事在更早历史里的对应物。`;
 async function callModel(sage, q){
-  if(!S.apiKey) throw new Error("未填写 API Key");
+  if(S.provider!=="proxy" && !S.apiKey) throw new Error("未填写 API Key");
   // 只带本人的往来，不把别的先生的话当成自己说过的
   const mine = S.conv.msgs.filter(m=>m.role==="user" || (m.role==="sage" && m.sage===sage.id));
   const trimmed=[]; for(const m of mine){ const last=trimmed[trimmed.length-1]; if(last && last.role===m.role){ if(m.role==="user") trimmed[trimmed.length-1]=m; continue; } trimmed.push(m); }
@@ -1406,7 +1409,7 @@ async function callModel(sage, q){
   };
   const r = await fetch(S.baseUrl.replace(/\/$/,"")+"/chat/completions",{
     method:"POST",
-    headers:{"Content-Type":"application/json","Authorization":"Bearer "+S.apiKey},
+    headers: S.provider==="proxy" ? {"Content-Type":"application/json","X-Access-Code":S.apiKey||""} : {"Content-Type":"application/json","Authorization":"Bearer "+S.apiKey},
     body:JSON.stringify(body)
   });
   if(!r.ok){ const t=await r.text().catch(()=> ""); throw new Error(`接口返回 ${r.status} ${t.slice(0,120)}`); }
@@ -1539,6 +1542,7 @@ function openSettings(){
   setModeUI(S.mode);
   $("lg-on").classList.toggle("on",FLAGS.legend); $("lg-off").classList.toggle("on",!FLAGS.legend);
   $("provider").value=S.provider; $("baseUrl").value=S.baseUrl; $("model").value=S.model; $("apiKey").value=S.apiKey;
+  $("key-label").textContent = S.provider==="proxy" ? "访问口令（服务器未设置则留空）" : "API Key";
   renderArts();
   $("mask").classList.add("on");
 }
@@ -1552,11 +1556,13 @@ function setModeUI(m){
 function onProvider(){
   const p=$("provider").value; const pre=PRESETS[p];
   $("baseUrl").value=pre.baseUrl; $("model").value=pre.model;
+  $("key-label").textContent = p==="proxy" ? "访问口令（服务器未设置则留空）" : "API Key";
+  $("apiKey").placeholder = p==="proxy" ? "留空即可" : "sk-…";
 }
 function saveSettings(){
   S.mode=$("mask").dataset.mode||"demo";
   S.provider=$("provider").value; S.baseUrl=$("baseUrl").value.trim(); S.model=$("model").value.trim(); S.apiKey=$("apiKey").value.trim();
-  if(S.mode==="api" && (!S.baseUrl||!S.model||!S.apiKey)){ toast("接口地址、模型名、Key 都要填"); return; }
+  if(S.mode==="api" && S.provider!=="proxy" && (!S.baseUrl||!S.model||!S.apiKey)){ toast("接口地址、模型名、Key 都要填"); return; }
   localStorage.setItem("wd_mode",S.mode); localStorage.setItem("wd_provider",S.provider);
   localStorage.setItem("wd_baseUrl",S.baseUrl); localStorage.setItem("wd_model",S.model); localStorage.setItem("wd_apiKey",S.apiKey);
   closeSettings(); toast(S.mode==="api"?"已接入模型":"演示模式");
@@ -1602,6 +1608,24 @@ function refreshArt(id){
 renderToday();
 renderSageRow($("sage-row"), pickHome);
 probeArt();
+// 自动接入：优先读 config.js（静态托管用），其次探测 /api/health（云托管用）
+(async()=>{
+  const C=window.BOGU_CONFIG||null;
+  if(C && C.apiKey){
+    const pre=PRESETS[C.provider]||PRESETS.deepseek;
+    S.mode="api"; S.provider=C.provider||"deepseek"; S.baseUrl=C.baseUrl||pre.baseUrl; S.model=C.model||pre.model; S.apiKey=C.apiKey;
+    localStorage.setItem("wd_mode","api"); localStorage.setItem("wd_provider",S.provider); localStorage.setItem("wd_baseUrl",S.baseUrl); localStorage.setItem("wd_model",S.model); localStorage.setItem("wd_apiKey",S.apiKey);
+    return;
+  }
+  if(!/^https?:/.test(location.protocol)) return;
+  try{
+    const r=await fetch("/api/health",{cache:"no-store"}); const j=await r.json();
+    if(j && j.ok && !(S.mode==="api" && S.provider!=="proxy" && S.apiKey)){
+      S.mode="api"; S.provider="proxy"; S.baseUrl="/api"; S.model="server";
+      localStorage.setItem("wd_mode","api"); localStorage.setItem("wd_provider","proxy"); localStorage.setItem("wd_baseUrl","/api"); localStorage.setItem("wd_model","server");
+    }
+  }catch(e){}
+})();
 </script>
 </body>
 </html>
