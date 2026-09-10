@@ -1262,7 +1262,12 @@ async function startFromHome(group){
   $("q0").value="";
   openChat(sages[0]);
   pushMe(q);
-  if(group){ pushNote(`群议：${sages.map(s=>s.name).join("、")}。`); for(const s of sages){ S.cur=s; setHeader(s); await respond(q,true); } }
+  if(group){
+    pushNote(`同席论道：${sages.map(s=>s.name).join("、")}。`);
+    const start=S.conv.msgs.length;
+    for(const s of sages){ S.cur=s; setHeader(s); const ctx=othersSaid(s,start); await respond(q,true,ctx||null); }
+    pushRoundBtn();
+  }
   else { if(!S.chosen) pushNote(`这件事，我请了${sages[0].name}${hon(sages[0])}。`); respond(q); }
 }
 function setHeader(s){
@@ -1304,7 +1309,7 @@ function pushSage(text, sage, q){
   const body = escapeHtml(text).replace(/(「[^」]+」|“[^”]+”)/g,'<span class="cite">$1</span>');
   d.innerHTML = `<div class="tag">${portrait(sage.id)}<em>${sage.name}</em></div><div class="body">${body}</div>
     <div class="ops">
-      <button onclick="openSwitch()">换一位听听</button>
+      <button onclick="openSwitch()">换一位听听</button><button onclick="joinDebate('${sage.id}')">请他入席</button>
       <button onclick="makeCard(this)">生成分享卡</button>
     </div>`;
   d.dataset.text=text; d.dataset.sage=sage.id; d.dataset.q=q||"";
@@ -1316,7 +1321,12 @@ function pushCrisis(){
 function scrollEnd(){ requestAnimationFrame(()=>window.scrollTo(0,document.body.scrollHeight)); }
 function escapeHtml(s){ return s.replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
 
-async function respond(q, inGroup){
+function othersSaid(sage, sinceIdx){
+  // 本轮里其他先生已经说过的话（同一问题下、在自己之前/之后）
+  const ms=S.conv.msgs.slice(sinceIdx).filter(m=>m.role==="sage" && m.sage!==sage.id);
+  return ms.map(m=>`【${byId(m.sage).name}】${m.text}`).join("\n\n");
+}
+async function respond(q, inGroup, ctx){
   if(S.busy && !inGroup) return;
   S.busy=true;
   const sage=S.cur;
@@ -1327,7 +1337,7 @@ async function respond(q, inGroup){
   const th=pushThinking();
   let text;
   try{
-    text = S.mode==="api" ? await callModel(sage, q) : await demoReply(sage, q);
+    text = S.mode==="api" ? await callModel(sage, q, ctx) : await demoReply(sage, q, ctx);
   }catch(e){
     text = null; th.remove(); S.busy=false;
     pushNote("没有连上模型：" + (e.message||e) + "。检查设置里的接口地址与 Key，或切回演示模式。");
@@ -1335,26 +1345,61 @@ async function respond(q, inGroup){
   }
   th.remove();
   const lastM=S.conv.msgs[S.conv.msgs.length-1];
-  if(!(lastM && lastM.role==="user" && lastM.text===q)) S.conv.msgs.push({role:"user",text:q});
+  if(!(lastM && lastM.role==="user" && lastM.text===q) && !q.startsWith("（第二轮）")) S.conv.msgs.push({role:"user",text:q});
   S.conv.msgs.push({role:"sage",sage:sage.id,text});
   saveHistory();
   pushSage(text, sage, q);
   S.busy=false;
 }
-function sendMore(){
+function joinDebate(curId){
+  // 把当前对话升级为论道：从换人面板选一位加入
+  openSwitch(true);
+}
+function pushRoundBtn(){
+  const d=document.createElement("div"); d.style.cssText="text-align:center;margin:4px 0 8px";
+  d.innerHTML=`<button class="btn ghost" style="font-size:14px;padding:7px 16px" onclick="debateRound(this)">让他们再辩一轮</button>`;
+  $("msgs").appendChild(d); scrollEnd();
+}
+async function debateRound(btn){
+  if(S.busy) return; btn.parentNode.remove();
+  const ids=S.conv.group||[]; const start=S.conv.msgs.length;
+  // 找到本题最近一轮的发言作为上下文
+  const lastUserIdx=[...S.conv.msgs].map((m,i)=>m.role==="user"?i:-1).filter(i=>i>=0).pop();
+  const q="（第二轮）针对刚才在座各位的分歧，再说一次你的看法。";
+  pushNote("再论一轮。");
+  for(const id of ids){ const s=byId(id); S.cur=s; setHeader(s); const ctx=othersSaid(s,lastUserIdx); await respond(q,true,ctx||null); }
+  pushRoundBtn();
+}
+async function sendMore(){
   const q=$("q1").value.trim(); if(!q||S.busy) return;
-  $("q1").value=""; pushMe(q); respond(q);
+  $("q1").value=""; pushMe(q);
+  if(S.conv.group){
+    const ids=S.conv.group; const start=S.conv.msgs.length;
+    for(const id of ids){ const s=byId(id); S.cur=s; setHeader(s); const ctx=othersSaid(s,start); await respond(q,true,ctx||null); }
+    pushRoundBtn();
+  } else respond(q);
 }
 $("q1").addEventListener("keydown",e=>{ if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendMore();} });
 $("q0").addEventListener("keydown",e=>{ if(e.key==="Enter"&&(e.metaKey||e.ctrlKey)){e.preventDefault();startFromHome();} });
 
 /* 换人：同一件事再问 */
-function openSwitch(){
+function openSwitch(join){
   const el=$("sw-row");
+  $("mask-sw").dataset.join = join ? "1" : "";
   el.innerHTML = groupsHTML(S.cur.id);
   el.querySelectorAll(".sage").forEach(b=>b.onclick=()=>{
     closeSwitch();
     const s=byId(b.dataset.id); if(s.id===S.cur.id) return;
+    if($("mask-sw").dataset.join){
+      // 入席：加入论道，并针对本题接着大家的话发言
+      if(!S.conv.group) S.conv.group=[S.conv.sage];
+      if(!S.conv.group.includes(s.id)) S.conv.group.push(s.id);
+      const lastUserIdx=[...S.conv.msgs].map((m,i)=>m.role==="user"?i:-1).filter(i=>i>=0).pop();
+      const lastQ=S.conv.msgs[lastUserIdx]?.text||S.conv.q;
+      S.cur=s; setHeader(s); pushNote(`${s.name}${hon(s)}入席。`);
+      (async()=>{ await respond(lastQ,true,othersSaid(s,lastUserIdx)||null); pushRoundBtn(); })();
+      return;
+    }
     S.cur=s; S.conv.sage=s.id;
     $("cur-name").textContent=s.name; $("cur-title").textContent=s.title;
     $("cur-pt").outerHTML = portrait(s.id).replace('class="pt"','class="pt" id="cur-pt"');
@@ -1390,13 +1435,20 @@ ${qs}`;
 const LEGEND_RULE = `
 
 【你的身份边界】你是民间传说与戏曲里的人物，和《西游记》里的人物一样属于文化想象，不是神明。你可以讲自己的故事、用自己的性格看对方的事，但绝不能暗示保佑、灵验、许愿、求签、改运、消灾，不做任何预言。若对方许愿、求保佑、问吉凶，明说"这个我保不了，也没人保得了，但我可以陪你想一想"，然后回到他能做的事上。`;
+const DEBATE_RULE = `
+
+【这是几位先生同席论道，不是各说各的】
+- 你必须至少点名回应一位已经发言的先生（用他的名字），明确说你赞同他哪一点、或不同意他哪一点、或把他的话往前推一步。
+- 不要复述提问，不要复述别人的话，直接接着说。
+- 观点要有你自己的立场，允许与在座的人相左；语气可以带一点交锋，但不失礼。
+- 篇幅 100–180 字，比单独回答短。如果是第二轮，60–120 字，只回应分歧点。`;
 const HIST_RULE = `
 
 【本次任务：评论一件历史事件，而不是开解个人困惑】
 - 结构改为：第一句直接给出你对这件事的态度（鲜明，不打太极）；然后从你自己的思想立场展开三到五句，允许与今天通行的看法不同，允许带有你所处时代的局限和偏见，并如实体现出来；最后用一句你本人的原话或一句你风格的话收束。150–220 字。
 - 若事件发生在你身后，开头明说"这是我死后的事，我以我的眼光看"，然后照常评论。
 - 不评论 1949 年以后的中国政治事件，不评论任何在世人物；遇到就说"这超出了我能谈的范围"，并可以改谈这件事在更早历史里的对应物。`;
-async function callModel(sage, q){
+async function callModel(sage, q, ctx){
   if(S.provider!=="proxy" && !S.apiKey) throw new Error("未填写 API Key");
   // 只带本人的往来，不把别的先生的话当成自己说过的
   const mine = S.conv.msgs.filter(m=>m.role==="user" || (m.role==="sage" && m.sage===sage.id));
@@ -1404,7 +1456,7 @@ async function callModel(sage, q){
   const hist = trimmed.filter(m=>!(m.role==="user" && m.text===q)).slice(-8).map(m=>({role:m.role==="user"?"user":"assistant",content:m.text}));
   const body = {
     model:S.model,
-    messages:[{role:"system",content:systemPrompt(sage)},...hist,{role:"user",content:q}],
+    messages:[{role:"system",content:systemPrompt(sage)+(ctx?DEBATE_RULE:"")},...hist,{role:"user",content: ctx ? `${q}\n\n（在座的其他先生已经说了下面这些话，请你接着他们说，而不是从头开始：）\n${ctx}` : q}],
     temperature:0.8, max_tokens:600
   };
   const r = await fetch(S.baseUrl.replace(/\/$/,"")+"/chat/completions",{
@@ -1419,8 +1471,14 @@ async function callModel(sage, q){
   return text;
 }
 /* 演示模式：不联网，按四段结构拼出回答，只用于看流程 */
-function demoReply(sage, q){
+function demoReply(sage, q, ctx){
   return new Promise(res=>setTimeout(()=>{
+    if(ctx){
+      const first=(ctx.match(/【([^】]+)】/)||[])[1]||"前面这位";
+      const qt=sage.quotes[Math.floor(Math.random()*sage.quotes.length)];
+      res(`${first}说的我听了。有一处我不同意——（演示模式：接入模型后，这里会是${sage.name}点名回应在座其他人的话，赞同或反驳，而不是各说各的。）\n\n「${qt[0]}」——${qt[1]}`);
+      return;
+    }
     const isFollow = S.conv.msgs.some(m=>m.role==="sage" && m.sage===sage.id);
     if(isFollow){
       const qt = sage.quotes[Math.floor(Math.random()*sage.quotes.length)];
@@ -1611,7 +1669,7 @@ probeArt();
 // 自动接入：优先读 config.js（静态托管用），其次探测 /api/health（云托管用）
 (async()=>{
   const C=window.BOGU_CONFIG||null;
-  if(C && C.apiKey){
+  if(C && C.apiKey && /^[\x21-\x7e]+$/.test(C.apiKey)){   // 占位文字（含中文）视为未填
     const pre=PRESETS[C.provider]||PRESETS.deepseek;
     S.mode="api"; S.provider=C.provider||"deepseek"; S.baseUrl=C.baseUrl||pre.baseUrl; S.model=C.model||pre.model; S.apiKey=C.apiKey;
     localStorage.setItem("wd_mode","api"); localStorage.setItem("wd_provider",S.provider); localStorage.setItem("wd_baseUrl",S.baseUrl); localStorage.setItem("wd_model",S.model); localStorage.setItem("wd_apiKey",S.apiKey);
