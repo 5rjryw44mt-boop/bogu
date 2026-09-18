@@ -1823,7 +1823,7 @@ async function speak(text, sage){
       const blob=await r.blob(); const url=URL.createObjectURL(blob);
       await new Promise(res=>{ const a=new Audio(url); curAudio=a; a.onended=()=>{URL.revokeObjectURL(url);res();}; a.onerror=()=>res(); a.play().catch(()=>{ toast("点一下屏幕再播放"); res(); }); });
       return;
-    }catch(e){ toast("语音合成失败："+String(e.message||e).slice(0,140)); }
+    }catch(e){ toast("语音合成失败："+String(e.message||e).slice(0,400)); }
   }
   if(!window.speechSynthesis) return;
   await new Promise(res=>{ const u=new SpeechSynthesisUtterance(clean); u.lang="zh-CN"; u.onend=()=>res(); u.onerror=()=>res(); speechSynthesis.speak(u); });

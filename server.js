@@ -114,7 +114,7 @@ async function volcTTSv3(text, speaker){
   let lastErr=null;
   for(const res of [...new Set(TTS_CANDIDATES)]){
     try{ const b=await volcTTSRes(res,text,speaker); TTS_ACTIVE=res; console.log("TTS 资源可用：",res); return b; }
-    catch(e){ lastErr=e; if(!/45000030|not granted|resource/i.test(e.message)) throw e; console.log("TTS 资源未开通：",res); }
+    catch(e){ lastErr=e; if(!/45000030|not granted/.test(e.message)) throw e; console.log("TTS 资源未开通：",res); }
   }
   throw new Error("你的 Key 没有任何可用的语音合成资源，试过："+TTS_CANDIDATES.join(" / ")+"。请到控制台的语音合成服务页查看 Resource ID，填到环境变量 TTS_RESOURCE_IDS。最后错误："+(lastErr&&lastErr.message));
 }
@@ -138,6 +138,17 @@ http.createServer((req,res)=>{
   const url=req.url.split("?")[0];
   if(req.method==="GET" && (url==="/"||url==="/index.html")){ res.writeHead(200,{"Content-Type":"text/html; charset=utf-8","Cache-Control":"no-cache"}); return res.end(INDEX); }
   if(url==="/api/health") return json(res,200,{ok:!!KEY, model:MODEL, access:!!ACCESS, voice:!!VOLC_KEY, asr:ASR_ACTIVE, tts:TTS_ACTIVE});
+  if(url==="/api/tts-test"){
+    if(ACCESS && (req.headers["x-access-code"]||"")!==ACCESS && !(req.url.includes("code="+encodeURIComponent(ACCESS)))) return json(res,401,{error:"需要口令：在地址后加 ?code=口令"});
+    (async()=>{
+      const out=[]; const cands=[...new Set(TTS_CANDIDATES)];
+      for(const r of cands){ for(const v of ["zh_female_vv_uranus_bigtts","zh_male_yuanboxiaoshu_moon_bigtts"]){
+        try{ const b=await volcTTSRes(r,"博古测试",v); out.push({resource:r,voice:v,ok:true,bytes:b.length}); }catch(e){ out.push({resource:r,voice:v,ok:false,error:e.message.slice(0,300)}); }
+      } }
+      json(res,200,{key:!!VOLC_KEY,active:TTS_ACTIVE,results:out});
+    })();
+    return;
+  }
   if(req.method==="POST" && (url==="/api/asr"||url==="/api/tts")){
     if(!VOLC_KEY) return json(res,500,{error:"服务器未配置语音 Key（环境变量 VOLC_API_KEY）"});
     if(ACCESS && (req.headers["x-access-code"]||"")!==ACCESS) return json(res,401,{error:"访问口令不正确"});
@@ -150,8 +161,10 @@ http.createServer((req,res)=>{
         if(url==="/api/asr"){ if(!inb.audio) return json(res,400,{error:"no audio"}); const text=await volcASR(inb.audio); return json(res,200,{text}); }
         const text=String(inb.text||"").slice(0,1200); if(!text) return json(res,400,{error:"no text"});
         const speaker=VOICES[inb.sage]||DEFAULT_VOICE;
-        let mp3; try{ mp3=await volcTTS(text,speaker,inb.sage); }
-        catch(e){ if(speaker!==DEFAULT_VOICE && !/没有任何可用|经典版/.test(e.message)){ console.log("音色不可用，退回默认：",speaker,e.message.slice(0,80)); mp3=await volcTTS(text,DEFAULT_VOICE,inb.sage); } else throw e; }
+        const chain=[...new Set([speaker,DEFAULT_VOICE,"zh_female_vv_uranus_bigtts","zh_female_shuangkuaisisi_moon_bigtts"])];
+        let mp3=null, errs=[];
+        for(const v of chain){ try{ mp3=await volcTTS(text,v,inb.sage); if(v!==speaker) console.log("音色退回：",speaker,"->",v); break; }catch(e){ errs.push(v+": "+e.message.slice(0,160)); if(/没有任何可用|经典版/.test(e.message)) break; } }
+        if(!mp3) throw new Error(errs.join(" | "));
         res.writeHead(200,{"Content-Type":"audio/mpeg","Cache-Control":"no-store"}); res.end(mp3);
       }catch(e){ json(res,502,{error:e.message}); }
     });
