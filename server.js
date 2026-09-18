@@ -13,21 +13,21 @@ const VOLC_KEY=process.env.VOLC_API_KEY||"";
 const VOLC_UID=process.env.VOLC_APP_ID||"bogu";
 const TTS_RES=process.env.TTS_RESOURCE_ID||"seed-tts-1.0";          // 新音色可改 seed-tts-2.0
 const ASR_RES=process.env.ASR_RESOURCE_ID||"volc.bigasr.auc_turbo";
-const DEFAULT_VOICE=process.env.TTS_DEFAULT_VOICE||"zh_male_yuanboxiaoshu_moon_bigtts";
+const DEFAULT_VOICE=process.env.TTS_DEFAULT_VOICE||"zh_male_m191_uranus_bigtts";   // 2.0 男声“云舟”
 // 三十三位的音色表（可用环境变量 VOICE_MAP 传 JSON 覆盖任意一位）
 let VOICES={
-  kongzi:"zh_male_dongfanghaoran_moon_bigtts", laozi:"zh_male_yuanboxiaoshu_moon_bigtts", zhuangzi:"zh_male_jingqiangkanye_moon_bigtts",
-  wangyangming:"zh_male_shenyeboke_moon_bigtts", sushi:"zh_male_wennuanahu_moon_bigtts", zengguofan:"zh_male_yuanboxiaoshu_moon_bigtts",
-  libai:"zh_male_yangguangqingnian_moon_bigtts", taoyuanming:"zh_male_wennuanahu_moon_bigtts", luxun:"zh_male_shenyeboke_moon_bigtts",
-  siddhartha:"zh_male_wennuanahu_moon_bigtts", huineng:"zh_male_guozhoudege_moon_bigtts", hongyi:"zh_male_dongfanghaoran_moon_bigtts",
-  zhugeliang:"zh_male_dongfanghaoran_moon_bigtts", fanli:"zh_male_yuanboxiaoshu_moon_bigtts",
-  socrates:"zh_male_yuanboxiaoshu_moon_bigtts", aurelius:"zh_male_dongfanghaoran_moon_bigtts", nietzsche:"zh_male_aojiaobazong_moon_bigtts",
-  tolstoy:"zh_male_yuanboxiaoshu_moon_bigtts", camus:"zh_male_shenyeboke_moon_bigtts",
-  lvdongbin:"zh_male_yangguangqingnian_moon_bigtts", tieguaili:"zh_male_jingqiangkanye_moon_bigtts", hexiangu:"zh_female_linjianvhai_moon_bigtts",
-  zhangguolao:"zh_male_yuanboxiaoshu_moon_bigtts", hanzhongli:"zh_male_beijingxiaoye_moon_bigtts", lancaihe:"zh_male_shaonianzixin_moon_bigtts",
-  hanxiangzi:"zh_male_shaonianzixin_moon_bigtts", caoguojiu:"zh_male_dongfanghaoran_moon_bigtts",
-  sunwukong:"zh_male_sunwukong_mars_bigtts", zhubajie:"zh_male_zhubajie_mars_bigtts", nezha:"zh_male_naiqimengwa_mars_bigtts",
-  jigong:"zh_male_jingqiangkanye_moon_bigtts", mulan:"zh_female_gaolengyujie_moon_bigtts", tudigong:"zh_male_wennuanahu_moon_bigtts"
+  kongzi:"zh_male_dongfanghaoran_uranus_bigtts", laozi:"zh_male_yuanboxiaoshu_uranus_bigtts", zhuangzi:"zh_male_jingqiangkanye_uranus_bigtts",
+  wangyangming:"zh_male_shenyeboke_uranus_bigtts", sushi:"zh_male_wennuanahu_uranus_bigtts", zengguofan:"zh_male_yuanboxiaoshu_uranus_bigtts",
+  libai:"zh_male_yangguangqingnian_uranus_bigtts", taoyuanming:"zh_male_wennuanahu_uranus_bigtts", luxun:"zh_male_shenyeboke_uranus_bigtts",
+  siddhartha:"zh_male_wennuanahu_uranus_bigtts", huineng:"zh_male_guozhoudege_uranus_bigtts", hongyi:"zh_male_dongfanghaoran_uranus_bigtts",
+  zhugeliang:"zh_male_dongfanghaoran_uranus_bigtts", fanli:"zh_male_yuanboxiaoshu_uranus_bigtts",
+  socrates:"zh_male_yuanboxiaoshu_uranus_bigtts", aurelius:"zh_male_dongfanghaoran_uranus_bigtts", nietzsche:"zh_male_aojiaobazong_uranus_bigtts",
+  tolstoy:"zh_male_yuanboxiaoshu_uranus_bigtts", camus:"zh_male_shenyeboke_uranus_bigtts",
+  lvdongbin:"zh_male_yangguangqingnian_uranus_bigtts", tieguaili:"zh_male_jingqiangkanye_uranus_bigtts", hexiangu:"zh_female_linjianvhai_uranus_bigtts",
+  zhangguolao:"zh_male_yuanboxiaoshu_uranus_bigtts", hanzhongli:"zh_male_beijingxiaoye_uranus_bigtts", lancaihe:"zh_male_shaonianzixin_uranus_bigtts",
+  hanxiangzi:"zh_male_shaonianzixin_uranus_bigtts", caoguojiu:"zh_male_dongfanghaoran_uranus_bigtts",
+  sunwukong:"zh_male_sunwukong_uranus_bigtts", zhubajie:"zh_male_zhubajie_uranus_bigtts", nezha:"zh_male_naiqimengwa_uranus_bigtts",
+  jigong:"zh_male_jingqiangkanye_uranus_bigtts", mulan:"zh_female_gaolengyujie_uranus_bigtts", tudigong:"zh_male_wennuanahu_uranus_bigtts"
 };
 try{ if(process.env.VOICE_MAP) Object.assign(VOICES, JSON.parse(process.env.VOICE_MAP)); }catch(e){ console.error("VOICE_MAP 不是合法 JSON"); }
 function uuid(){ return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g,c=>{const r=Math.random()*16|0;return (c==="x"?r:(r&3|8)).toString(16);}); }
@@ -142,7 +142,7 @@ http.createServer((req,res)=>{
     if(ACCESS && (req.headers["x-access-code"]||"")!==ACCESS && !(req.url.includes("code="+encodeURIComponent(ACCESS)))) return json(res,401,{error:"需要口令：在地址后加 ?code=口令"});
     (async()=>{
       const out=[]; const cands=[...new Set(TTS_CANDIDATES)];
-      for(const r of cands){ for(const v of ["zh_female_vv_uranus_bigtts","zh_male_yuanboxiaoshu_moon_bigtts"]){
+      for(const r of cands){ for(const v of ["zh_male_m191_uranus_bigtts","zh_male_yuanboxiaoshu_uranus_bigtts","zh_male_sunwukong_uranus_bigtts","zh_male_yuanboxiaoshu_moon_bigtts"]){
         try{ const b=await volcTTSRes(r,"博古测试",v); out.push({resource:r,voice:v,ok:true,bytes:b.length}); }catch(e){ out.push({resource:r,voice:v,ok:false,error:e.message.slice(0,300)}); }
       } }
       json(res,200,{key:!!VOLC_KEY,active:TTS_ACTIVE,results:out});
@@ -161,7 +161,8 @@ http.createServer((req,res)=>{
         if(url==="/api/asr"){ if(!inb.audio) return json(res,400,{error:"no audio"}); const text=await volcASR(inb.audio); return json(res,200,{text}); }
         const text=String(inb.text||"").slice(0,1200); if(!text) return json(res,400,{error:"no text"});
         const speaker=VOICES[inb.sage]||DEFAULT_VOICE;
-        const chain=[...new Set([speaker,DEFAULT_VOICE,"zh_female_vv_uranus_bigtts","zh_female_shuangkuaisisi_moon_bigtts"])];
+        const alt=speaker.replace(/_uranus_bigtts$/,"_moon_bigtts");
+        const chain=[...new Set([speaker,alt,DEFAULT_VOICE,"zh_male_liufei_uranus_bigtts","zh_male_M392_conversation_wvae_bigtts","zh_female_vv_uranus_bigtts"])];
         let mp3=null, errs=[];
         for(const v of chain){ try{ mp3=await volcTTS(text,v,inb.sage); if(v!==speaker) console.log("音色退回：",speaker,"->",v); break; }catch(e){ errs.push(v+": "+e.message.slice(0,160)); if(/没有任何可用|经典版/.test(e.message)) break; } }
         if(!mp3) throw new Error(errs.join(" | "));
