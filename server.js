@@ -31,9 +31,47 @@ let VOICES={
 };
 try{ if(process.env.VOICE_MAP) Object.assign(VOICES, JSON.parse(process.env.VOICE_MAP)); }catch(e){ console.error("VOICE_MAP 不是合法 JSON"); }
 function uuid(){ return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g,c=>{const r=Math.random()*16|0;return (c==="x"?r:(r&3|8)).toString(16);}); }
+const ASR_RES_STD=process.env.ASR_RESOURCE_ID_STD||"volc.bigasr.auc";   // 标准版（提交+查询）作为极速版未开通时的退路
+function asrHeaders(res, reqid){ return {"Content-Type":"application/json","X-Api-Key":VOLC_KEY,"X-Api-Resource-Id":res,"X-Api-Request-Id":reqid,"X-Api-Sequence":"-1"}; }
+function asrBody(b64wav){ return JSON.stringify({user:{uid:VOLC_UID},audio:{format:"wav",data:b64wav},request:{model_name:"bigmodel",enable_punc:true,enable_itn:true}}); }
+function pickText(j){ return (j.result&&j.result.text)||(j.result&&j.result.utterances&&j.result.utterances.map(u=>u.text).join(""))||""; }
+async function volcASRStandard(b64wav){
+  const reqid=uuid();
+  let r=await fetch("https://openspeech.bytedance.com/api/v3/auc/bigmodel/submit",{method:"POST",headers:asrHeaders(ASR_RES_STD_CUR||ASR_RES_STD,reqid),body:asrBody(b64wav)});
+  let code=r.headers.get("x-api-status-code"); let t=await r.text();
+  if(code!=="20000000") throw new Error("识别提交失败 "+code+" "+(r.headers.get("x-api-message")||"")+" "+t.slice(0,120));
+  for(let i=0;i<40;i++){
+    await new Promise(z=>setTimeout(z,400));
+    r=await fetch("https://openspeech.bytedance.com/api/v3/auc/bigmodel/query",{method:"POST",headers:asrHeaders(ASR_RES_STD_CUR||ASR_RES_STD,reqid),body:"{}"});
+    code=r.headers.get("x-api-status-code"); t=await r.text();
+    if(code==="20000000"){ let j={}; try{ j=JSON.parse(t); }catch(e){} return pickText(j); }
+    if(code!=="20000001" && code!=="20000002") throw new Error("识别查询失败 "+code+" "+(r.headers.get("x-api-message")||""));
+  }
+  throw new Error("识别超时");
+}
+// 依次尝试多个资源 ID（控制台不同版本叫法不同），哪个通了就记住哪个；也可用 ASR_RESOURCE_IDS 指定，逗号分隔
+const ASR_CANDIDATES=(process.env.ASR_RESOURCE_IDS||[ASR_RES,"volc.seedasr.auc_turbo","volc.seedasr.auc","volc.bigasr.auc_turbo","volc.bigasr.auc"].join(",")).split(",").map(s=>s.trim()).filter(Boolean);
+let ASR_ACTIVE=null;
+async function volcASRWith(res, b64wav){
+  if(/turbo/.test(res)) return await volcASRFlashRes(res,b64wav);
+  return await volcASRStandardRes(res,b64wav);
+}
 async function volcASR(b64wav){
+  if(ASR_ACTIVE){ return await volcASRWith(ASR_ACTIVE,b64wav); }
+  let lastErr=null;
+  for(const res of [...new Set(ASR_CANDIDATES)]){
+    try{ const t=await volcASRWith(res,b64wav); ASR_ACTIVE=res; console.log("ASR 资源可用：",res); return t; }
+    catch(e){ lastErr=e; if(!/45000030|not granted/.test(e.message)) throw e; console.log("ASR 资源未开通：",res); }
+  }
+  throw new Error("你的 Key 没有任何可用的录音识别资源，试过："+ASR_CANDIDATES.join(" / ")+"。请到火山控制台的该服务页查看 Resource ID，填到环境变量 ASR_RESOURCE_IDS。最后错误："+(lastErr&&lastErr.message));
+}
+async function volcASRStandardRes(res,b64wav){ const old=ASR_RES_STD_CUR; ASR_RES_STD_CUR=res; try{ return await volcASRStandard(b64wav); } finally{ ASR_RES_STD_CUR=old; } }
+let ASR_RES_STD_CUR=null;
+async function volcASRFlashRes(res,b64wav){ const old=ASR_RES_FLASH_CUR; ASR_RES_FLASH_CUR=res; try{ return await volcASRFlash(b64wav); } finally{ ASR_RES_FLASH_CUR=old; } }
+let ASR_RES_FLASH_CUR=null;
+async function volcASRFlash(b64wav){
   const r=await fetch("https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash",{method:"POST",
-    headers:{"Content-Type":"application/json","X-Api-Key":VOLC_KEY,"X-Api-Resource-Id":ASR_RES,"X-Api-Request-Id":uuid(),"X-Api-Sequence":"-1"},
+    headers:{"Content-Type":"application/json","X-Api-Key":VOLC_KEY,"X-Api-Resource-Id":ASR_RES_FLASH_CUR||ASR_RES,"X-Api-Request-Id":uuid(),"X-Api-Sequence":"-1"},
     body:JSON.stringify({user:{uid:VOLC_UID},audio:{format:"wav",data:b64wav},request:{model_name:"bigmodel",enable_punc:true,enable_itn:true}})});
   const code=r.headers.get("x-api-status-code"); const t=await r.text();
   let j={}; try{ j=JSON.parse(t); }catch(e){}
@@ -59,7 +97,7 @@ function json(res,code,obj){ res.writeHead(code,{"Content-Type":"application/jso
 http.createServer((req,res)=>{
   const url=req.url.split("?")[0];
   if(req.method==="GET" && (url==="/"||url==="/index.html")){ res.writeHead(200,{"Content-Type":"text/html; charset=utf-8","Cache-Control":"no-cache"}); return res.end(INDEX); }
-  if(url==="/api/health") return json(res,200,{ok:!!KEY, model:MODEL, access:!!ACCESS, voice:!!VOLC_KEY});
+  if(url==="/api/health") return json(res,200,{ok:!!KEY, model:MODEL, access:!!ACCESS, voice:!!VOLC_KEY, asr:ASR_ACTIVE});
   if(req.method==="POST" && (url==="/api/asr"||url==="/api/tts")){
     if(!VOLC_KEY) return json(res,500,{error:"服务器未配置语音 Key（环境变量 VOLC_API_KEY）"});
     if(ACCESS && (req.headers["x-access-code"]||"")!==ACCESS) return json(res,401,{error:"访问口令不正确"});

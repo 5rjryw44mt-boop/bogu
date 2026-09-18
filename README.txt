@@ -11,7 +11,7 @@
    VOLC_API_KEY     = 火山引擎语音的 API Key      （必填，否则语音功能不可用，页面自动退回文字）
    VOLC_APP_ID      = 你的 App ID                 （可选，用作 uid）
    TTS_RESOURCE_ID  = seed-tts-1.0                （可选；默认 1.0 音色库，想用 2.0 新音色改为 seed-tts-2.0）
-   ASR_RESOURCE_ID  = volc.bigasr.auc_turbo       （可选，默认即极速识别）
+   ASR_RESOURCE_IDS = volc.bigasr.auc_turbo,volc.bigasr.auc （可选；服务器会按顺序自动尝试，哪个开通了用哪个。控制台叫法不同时把服务页显示的 Resource ID 填在最前面）
    TTS_DEFAULT_VOICE= zh_male_yuanboxiaoshu_moon_bigtts （可选，某位音色不可用时的兜底）
    VOICE_MAP        = {"sunwukong":"xxx","laozi":"yyy"}  （可选，JSON，覆盖任意一位的音色）
 3. 部署成功后打开服务域名，页面自动检测到服务器已接入，无需再填 Key。
