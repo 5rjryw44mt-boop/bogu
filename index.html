@@ -243,7 +243,7 @@ button:focus-visible{outline:2px solid var(--qing);outline-offset:2px}
       </div>
       <label>语音</label>
       <div class="mode"><button id="tts-on" onclick="setTTS(true)">先生开口朗读</button><button id="tts-off" onclick="setTTS(false)">只看文字</button></div>
-      <div class="note" style="border:0;padding-top:6px;margin-top:4px">说话用手机自带的语音识别，朗读用手机自带的语音；微信内置浏览器可能不支持，请用系统浏览器（Safari / Chrome）打开。</div>
+      <div class="note" style="border:0;padding-top:6px;margin-top:4px">说话由服务器识别，朗读由服务器按每位先生的音色合成；服务器未配置语音时，朗读退回手机自带声音。</div>
       <label>传说组（八仙）</label>
       <div class="mode"><button id="lg-on" onclick="setLegend(true)">显示</button><button id="lg-off" onclick="setLegend(false)">隐藏（上线版）</button></div>
       <label>形象（上传真图替换矢量像，存在本机浏览器）</label>
@@ -1329,6 +1329,7 @@ function pickThree(){
   return [first, pick(other), pick(other.length?other:same)];
 }
 async function startFromHome(group){
+  unlockAudio();
   const q = $("q0").value.trim();
   if(!q){ toast(S.askMode==="ask"?"先说一句你的困惑":"先写一件历史事件"); return; }
   const sages = group ? pickThree() : [S.chosen ? byId(S.chosen) : (S.askMode==="ask" ? recommend(q) : ACTIVE()[Math.floor(Math.random()*ACTIVE().length)])];
@@ -1744,55 +1745,90 @@ function refreshArt(id){
   document.querySelectorAll(`.pt[data-id="${id}"]`).forEach(el=>{ el.outerHTML = el.id ? portrait(id).replace('class="pt"',`class="pt" id="${el.id}"`) : portrait(id); });
 }
 
-/* ===================== 语音：说话（识别）与朗读 ===================== */
+/* ===================== 语音：录音→服务端识别；服务端合成→播放（浏览器能力仅作兜底） ===================== */
 S.tts = localStorage.getItem("wd_tts")==="1";
+S.voiceServer=false;   // /api/health 里 voice:true 表示服务器已接语音
 function setTTS(v){ S.tts=v; localStorage.setItem("wd_tts",v?"1":"0"); $("tts-on").classList.toggle("on",v); $("tts-off").classList.toggle("on",!v); if(!v) stopSpeak(); }
-const SR = window.SpeechRecognition || window.webkitSpeechRecognition || null;
-let rec=null, recTarget=null;
-function toggleMic(targetId){
-  if(!SR){ toast("这个浏览器不支持语音输入，请用 Safari 或 Chrome 打开"); return; }
-  if(rec){ rec.stop(); return; }
+function apiHeaders(){ return S.provider==="proxy" ? {"Content-Type":"application/json","X-Access-Code":S.apiKey||""} : {"Content-Type":"application/json"}; }
+
+// ---- 录音：Web Audio 采样 → 16k 单声道 16bit WAV（所有手机浏览器都支持，不依赖浏览器自带识别） ----
+let recState=null;
+function unlockAudio(){ // iOS 需要在用户手势里"解锁"播放
+  try{ if(!S._unlocked){ const a=new Audio("data:audio/mp3;base64,//uQxAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAACcQCAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICA//////////////////////////////////////////////////////////////////8AAABhTEFNRTMuMTAwA8MAAAAAAAAAABQgJAUHQQAB9AAAAnGMHkkIAAAAAAD/+0DEAAPH3aeMAAAAgAAA/wAAAAABAAAAAAAAAAAAAAA="); a.play().catch(()=>{}); S._unlocked=true; } }catch(e){}
+}
+async function toggleMic(targetId){
+  unlockAudio();
+  if(recState){ finishRec(); return; }
+  if(!S.voiceServer){ toast("服务器还没接语音，请先在云托管配置 VOLC_API_KEY"); return; }
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){ toast("这个浏览器不支持录音，请用系统浏览器打开"); return; }
   stopSpeak();
-  recTarget=targetId;
-  rec=new SR(); rec.lang="zh-CN"; rec.interimResults=true; rec.continuous=false; rec.maxAlternatives=1;
+  let stream; try{ stream=await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:true,noiseSuppression:true}}); }
+  catch(e){ toast("请允许使用麦克风"); return; }
+  const AC=window.AudioContext||window.webkitAudioContext; const ctx=new AC(); if(ctx.state==="suspended") await ctx.resume();
+  const src=ctx.createMediaStreamSource(stream); const proc=ctx.createScriptProcessor(4096,1,1);
   const btn=$(targetId==="q0"?"mic0":"mic1"); btn.classList.add("on");
-  let finalText="";
-  rec.onresult=e=>{ let s=""; for(let i=e.resultIndex;i<e.results.length;i++){ s+=e.results[i][0].transcript; if(e.results[i].isFinal) finalText+=e.results[i][0].transcript; } $(targetId).value=(finalText||s).trim(); };
-  rec.onerror=e=>{ toast(e.error==="not-allowed"?"请允许使用麦克风":"没听清，再说一次"); };
-  rec.onend=()=>{ btn.classList.remove("on"); rec=null;
-    const v=$(targetId).value.trim();
-    if(v){ if(targetId==="q0") startFromHome(false); else sendMore(); }   // 说完自动发出去，孩子不用再按
+  const st={targetId,stream,ctx,proc,buf:[],rate:ctx.sampleRate,started:Date.now(),lastVoice:0,spoke:false,btn};
+  recState=st;
+  proc.onaudioprocess=e=>{
+    const d=e.inputBuffer.getChannelData(0); st.buf.push(new Float32Array(d));
+    let sum=0; for(let i=0;i<d.length;i++) sum+=d[i]*d[i]; const rms=Math.sqrt(sum/d.length);
+    const now=Date.now();
+    if(rms>0.02){ st.lastVoice=now; st.spoke=true; }
+    // 说过话之后静音 1.4 秒自动结束；最长 20 秒
+    if((st.spoke && now-st.lastVoice>1400) || now-st.started>20000) finishRec();
   };
-  try{ rec.start(); toast("说吧，说完停一下就会发出去"); }catch(e){ btn.classList.remove("on"); rec=null; }
+  src.connect(proc); proc.connect(ctx.destination);
+  toast("说吧，说完停一下就好");
 }
-// 朗读：按人物调语速和音高，女性人物尽量选女声
-const VOICE_STYLE={ laozi:[0.8,0.8], zhuangzi:[0.95,1.0], sunwukong:[1.2,1.25], zhubajie:[0.9,0.85], nezha:[1.15,1.3], libai:[1.05,1.05], luxun:[0.95,0.9],
-  nietzsche:[1.05,0.95], socrates:[0.9,1.0], tudigong:[0.85,0.9], zhangguolao:[0.85,1.0], hexiangu:[0.95,1.15], mulan:[1.0,1.1], jigong:[1.1,1.15], huineng:[0.9,0.95], siddhartha:[0.85,0.95] };
-const FEMALE=["hexiangu","mulan"];
-let voices=[];
-function loadVoices(){ if(window.speechSynthesis){ voices=speechSynthesis.getVoices(); speechSynthesis.onvoiceschanged=()=>{ voices=speechSynthesis.getVoices(); }; } }
-function pickVoice(sage){
-  const zh=voices.filter(v=>/zh|cmn/i.test(v.lang));
-  if(!zh.length) return null;
-  if(FEMALE.includes(sage.id)){ const f=zh.find(v=>/tingting|xiaoxiao|huihui|yaoyao|female|女/i.test(v.name)); if(f) return f; }
-  else { const m=zh.find(v=>/yunxi|yunyang|kangkang|male|男/i.test(v.name)); if(m) return m; }
-  return zh[0];
+function finishRec(){
+  const st=recState; if(!st) return; recState=null;
+  try{ st.proc.disconnect(); st.stream.getTracks().forEach(t=>t.stop()); st.ctx.close(); }catch(e){}
+  st.btn.classList.remove("on");
+  if(!st.spoke){ toast("没听到声音"); return; }
+  const wav=encodeWav(st.buf, st.rate, 16000);
+  $(st.targetId).value="…识别中…";
+  fetch("/api/asr",{method:"POST",headers:apiHeaders(),body:JSON.stringify({audio:wav})}).then(r=>r.json()).then(j=>{
+    if(j.error) throw new Error(j.error);
+    const text=(j.text||"").trim();
+    $(st.targetId).value=text;
+    if(!text){ toast("没听清，再说一次"); return; }
+    if(st.targetId==="q0") startFromHome(false); else sendMore();
+  }).catch(e=>{ $(st.targetId).value=""; toast("识别失败："+e.message); });
 }
-function stopSpeak(){ if(window.speechSynthesis) speechSynthesis.cancel(); }
-function speak(text, sage){
-  return new Promise(res=>{
-    if(!window.speechSynthesis){ toast("这个浏览器不支持朗读"); return res(); }
-    stopSpeak();
-    const clean=text.replace(/——[^\n]*/g,"").replace(/[「」]/g,"").replace(/\n+/g,"。");
-    const u=new SpeechSynthesisUtterance(clean); u.lang="zh-CN";
-    const st=VOICE_STYLE[sage.id]||[1.0,1.0]; u.rate=st[0]; u.pitch=st[1];
-    const v=pickVoice(sage); if(v) u.voice=v;
-    u.onend=()=>res(); u.onerror=()=>res();
-    speechSynthesis.speak(u);
-  });
+function encodeWav(chunks, inRate, outRate){
+  let len=0; for(const c of chunks) len+=c.length;
+  const all=new Float32Array(len); let o=0; for(const c of chunks){ all.set(c,o); o+=c.length; }
+  const ratio=inRate/outRate, n=Math.floor(all.length/ratio); const pcm=new Int16Array(n);
+  for(let i=0;i<n;i++){ const s=Math.max(-1,Math.min(1,all[Math.floor(i*ratio)])); pcm[i]=s<0?s*0x8000:s*0x7FFF; }
+  const buf=new ArrayBuffer(44+pcm.length*2), v=new DataView(buf);
+  const W=(p,s)=>{ for(let i=0;i<s.length;i++) v.setUint8(p+i,s.charCodeAt(i)); };
+  W(0,"RIFF"); v.setUint32(4,36+pcm.length*2,true); W(8,"WAVE"); W(12,"fmt "); v.setUint32(16,16,true); v.setUint16(20,1,true); v.setUint16(22,1,true);
+  v.setUint32(24,outRate,true); v.setUint32(28,outRate*2,true); v.setUint16(32,2,true); v.setUint16(34,16,true); W(36,"data"); v.setUint32(40,pcm.length*2,true);
+  new Int16Array(buf,44).set(pcm);
+  let bin=""; const bytes=new Uint8Array(buf); for(let i=0;i<bytes.length;i+=0x8000) bin+=String.fromCharCode.apply(null,bytes.subarray(i,i+0x8000));
+  return btoa(bin);
 }
-function speakMsg(btn){ const box=btn.closest(".sg"); speak(box.dataset.text, byId(box.dataset.sage)); }
-loadVoices();
+
+// ---- 朗读：优先服务端合成（每位先生自己的音色），失败再退回手机自带声音 ----
+let curAudio=null;
+function stopSpeak(){ if(curAudio){ try{ curAudio.pause(); }catch(e){} curAudio=null; } if(window.speechSynthesis) speechSynthesis.cancel(); }
+function cleanForSpeech(t){ return t.replace(/——[^\n]*/g,"").replace(/[「」]/g,"").replace(/\n+/g,"。").replace(/（[^）]*）/g,""); }
+async function speak(text, sage){
+  stopSpeak();
+  const clean=cleanForSpeech(text);
+  if(S.voiceServer){
+    try{
+      const r=await fetch("/api/tts",{method:"POST",headers:apiHeaders(),body:JSON.stringify({text:clean,sage:sage.id})});
+      if(!r.ok){ const j=await r.json().catch(()=>({})); throw new Error(j.error||("HTTP "+r.status)); }
+      const blob=await r.blob(); const url=URL.createObjectURL(blob);
+      await new Promise(res=>{ const a=new Audio(url); curAudio=a; a.onended=()=>{URL.revokeObjectURL(url);res();}; a.onerror=()=>res(); a.play().catch(()=>{ toast("点一下屏幕再播放"); res(); }); });
+      return;
+    }catch(e){ toast("语音合成失败，改用手机声音"); }
+  }
+  if(!window.speechSynthesis) return;
+  await new Promise(res=>{ const u=new SpeechSynthesisUtterance(clean); u.lang="zh-CN"; u.onend=()=>res(); u.onerror=()=>res(); speechSynthesis.speak(u); });
+}
+function speakMsg(btn){ unlockAudio(); const box=btn.closest(".sg"); speak(box.dataset.text, byId(box.dataset.sage)); }
 
 /* ===================== 启动 ===================== */
 renderToday();
@@ -1810,6 +1846,7 @@ probeArt();
   if(!/^https?:/.test(location.protocol)) return;
   try{
     const r=await fetch("/api/health",{cache:"no-store"}); const j=await r.json();
+    if(j) S.voiceServer=!!j.voice;
     if(j && j.ok && !(S.mode==="api" && S.provider!=="proxy" && S.apiKey)){
       S.mode="api"; S.provider="proxy"; S.baseUrl="/api"; S.model="server";
       localStorage.setItem("wd_mode","api"); localStorage.setItem("wd_provider","proxy"); localStorage.setItem("wd_baseUrl","/api"); localStorage.setItem("wd_model","server");
