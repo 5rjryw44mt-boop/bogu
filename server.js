@@ -79,12 +79,52 @@ async function volcASRFlash(b64wav){
   const text=(j.result&&j.result.text)||(j.result&&j.result.utterances&&j.result.utterances.map(u=>u.text).join(""))||"";
   return text;
 }
-async function volcTTS(text, speaker){
+// 合成同样按顺序自动尝试资源 ID（1.0 / 2.0 控制台叫法不同），哪个通了记住哪个；可用 TTS_RESOURCE_IDS 指定
+const TTS_CANDIDATES=(process.env.TTS_RESOURCE_IDS||[TTS_RES,"seed-tts-2.0","seed-tts-1.0","volc.service_type.10029","volc.megatts.default"].join(",")).split(",").map(x=>x.trim()).filter(Boolean);
+let TTS_ACTIVE=null;
+// 小模型「语音合成」（经典版）走 V1 接口：需要 AppID + Access Token（旧式凭据），音色为 BVxxx_streaming
+const VOLC_TOKEN=process.env.VOLC_ACCESS_TOKEN||"";
+const V1_CLUSTER=process.env.TTS_V1_CLUSTER||"volcano_tts";
+const V1_VOICES={ // 经典版音色表（可用 VOICE_MAP_V1 覆盖）
+  kongzi:"BV701_streaming", laozi:"BV701_streaming", zhuangzi:"BV102_streaming", wangyangming:"BV056_streaming", sushi:"BV102_streaming", zengguofan:"BV701_streaming",
+  libai:"BV056_streaming", taoyuanming:"BV102_streaming", luxun:"BV511_streaming", siddhartha:"BV102_streaming", huineng:"BV002_streaming", hongyi:"BV102_streaming",
+  zhugeliang:"BV102_streaming", fanli:"BV701_streaming", socrates:"BV701_streaming", aurelius:"BV511_streaming", nietzsche:"BV701_streaming", tolstoy:"BV701_streaming", camus:"BV511_streaming",
+  lvdongbin:"BV056_streaming", tieguaili:"BV021_streaming", hexiangu:"BV119_streaming", zhangguolao:"BV701_streaming", hanzhongli:"BV021_streaming", lancaihe:"BV407_streaming",
+  hanxiangzi:"BV102_streaming", caoguojiu:"BV102_streaming", sunwukong:"BV407_streaming", zhubajie:"BV021_streaming", nezha:"BV051_streaming", jigong:"BV021_streaming", mulan:"BV115_streaming", tudigong:"BV002_streaming"
+};
+try{ if(process.env.VOICE_MAP_V1) Object.assign(V1_VOICES, JSON.parse(process.env.VOICE_MAP_V1)); }catch(e){}
+async function volcTTSv1(text, sageId){
+  const voice=V1_VOICES[sageId]||"BV002_streaming";
+  const r=await fetch("https://openspeech.bytedance.com/api/v1/tts",{method:"POST",
+    headers:{"Content-Type":"application/json","Authorization":"Bearer;"+VOLC_TOKEN},
+    body:JSON.stringify({app:{appid:VOLC_UID,token:VOLC_TOKEN,cluster:V1_CLUSTER},user:{uid:"bogu"},audio:{voice_type:voice,encoding:"mp3",speed_ratio:1.0},request:{reqid:uuid(),text,operation:"query"}})});
+  const t=await r.text(); let j={}; try{ j=JSON.parse(t); }catch(e){}
+  if(!j.data) throw new Error("经典版合成失败 "+(j.code||r.status)+" "+(j.message||t.slice(0,120)));
+  return Buffer.from(j.data,"base64");
+}
+async function volcTTS(text, speaker, sageId){
+  try{ return await volcTTSv3(text, speaker); }
+  catch(e){
+    if(VOLC_TOKEN && VOLC_UID && VOLC_UID!=="bogu"){ console.log("大模型合成不可用，改用经典版：",e.message.slice(0,80)); return await volcTTSv1(text, sageId); }
+    throw e;
+  }
+}
+async function volcTTSv3(text, speaker){
+  if(TTS_ACTIVE) return await volcTTSRes(TTS_ACTIVE,text,speaker);
+  let lastErr=null;
+  for(const res of [...new Set(TTS_CANDIDATES)]){
+    try{ const b=await volcTTSRes(res,text,speaker); TTS_ACTIVE=res; console.log("TTS 资源可用：",res); return b; }
+    catch(e){ lastErr=e; if(!/45000030|not granted|resource/i.test(e.message)) throw e; console.log("TTS 资源未开通：",res); }
+  }
+  throw new Error("你的 Key 没有任何可用的语音合成资源，试过："+TTS_CANDIDATES.join(" / ")+"。请到控制台的语音合成服务页查看 Resource ID，填到环境变量 TTS_RESOURCE_IDS。最后错误："+(lastErr&&lastErr.message));
+}
+async function volcTTSRes(res, text, speaker){
   const r=await fetch("https://openspeech.bytedance.com/api/v3/tts/unidirectional",{method:"POST",
-    headers:{"Content-Type":"application/json","X-Api-Key":VOLC_KEY,"X-Api-Resource-Id":TTS_RES,"X-Api-Request-Id":uuid()},
+    headers:{"Content-Type":"application/json","X-Api-Key":VOLC_KEY,"X-Api-Resource-Id":res,"X-Api-Request-Id":uuid()},
     body:JSON.stringify({user:{uid:VOLC_UID},req_params:{text,speaker,audio_params:{format:"mp3",sample_rate:24000}}})});
   const t=await r.text();
-  if(!r.ok) throw new Error("合成失败 "+r.status+" "+t.slice(0,160));
+  const hc=r.headers.get("x-api-status-code"), hm=r.headers.get("x-api-message");
+  if(!r.ok || (hc && hc!=="20000000")) throw new Error("合成失败 "+(hc||r.status)+" "+(hm||"")+" "+t.slice(0,160));
   // 流式返回的是一行行 JSON，逐行取 data 拼成 mp3
   const chunks=[]; let err=null;
   for(const line of t.split(/\r?\n/)){ const s=line.trim(); if(!s) continue; try{ const j=JSON.parse(s); if(j.data) chunks.push(Buffer.from(j.data,"base64")); if(j.code && j.code!==0 && j.code!==20000000 && j.message) err=j.code+" "+j.message; }catch(e){} }
@@ -97,7 +137,7 @@ function json(res,code,obj){ res.writeHead(code,{"Content-Type":"application/jso
 http.createServer((req,res)=>{
   const url=req.url.split("?")[0];
   if(req.method==="GET" && (url==="/"||url==="/index.html")){ res.writeHead(200,{"Content-Type":"text/html; charset=utf-8","Cache-Control":"no-cache"}); return res.end(INDEX); }
-  if(url==="/api/health") return json(res,200,{ok:!!KEY, model:MODEL, access:!!ACCESS, voice:!!VOLC_KEY, asr:ASR_ACTIVE});
+  if(url==="/api/health") return json(res,200,{ok:!!KEY, model:MODEL, access:!!ACCESS, voice:!!VOLC_KEY, asr:ASR_ACTIVE, tts:TTS_ACTIVE});
   if(req.method==="POST" && (url==="/api/asr"||url==="/api/tts")){
     if(!VOLC_KEY) return json(res,500,{error:"服务器未配置语音 Key（环境变量 VOLC_API_KEY）"});
     if(ACCESS && (req.headers["x-access-code"]||"")!==ACCESS) return json(res,401,{error:"访问口令不正确"});
@@ -110,7 +150,8 @@ http.createServer((req,res)=>{
         if(url==="/api/asr"){ if(!inb.audio) return json(res,400,{error:"no audio"}); const text=await volcASR(inb.audio); return json(res,200,{text}); }
         const text=String(inb.text||"").slice(0,1200); if(!text) return json(res,400,{error:"no text"});
         const speaker=VOICES[inb.sage]||DEFAULT_VOICE;
-        let mp3; try{ mp3=await volcTTS(text,speaker); }catch(e){ if(speaker!==DEFAULT_VOICE){ mp3=await volcTTS(text,DEFAULT_VOICE); } else throw e; }
+        let mp3; try{ mp3=await volcTTS(text,speaker,inb.sage); }
+        catch(e){ if(speaker!==DEFAULT_VOICE && !/没有任何可用|经典版/.test(e.message)){ console.log("音色不可用，退回默认：",speaker,e.message.slice(0,80)); mp3=await volcTTS(text,DEFAULT_VOICE,inb.sage); } else throw e; }
         res.writeHead(200,{"Content-Type":"audio/mpeg","Cache-Control":"no-store"}); res.end(mp3);
       }catch(e){ json(res,502,{error:e.message}); }
     });

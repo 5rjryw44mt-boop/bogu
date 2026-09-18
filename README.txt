@@ -9,7 +9,8 @@
    MODEL_BASE_URL   = https://api.deepseek.com （可选；换通义就填 https://dashscope.aliyuncs.com/compatible-mode/v1 并改 MODEL_NAME）
    —— 语音（豆包语音 / 火山引擎，新版控制台一个 API Key 同时管识别与合成）——
    VOLC_API_KEY     = 火山引擎语音的 API Key      （必填，否则语音功能不可用，页面自动退回文字）
-   VOLC_APP_ID      = 你的 App ID                 （可选，用作 uid）
+   VOLC_APP_ID      = 你的 App ID                 （用小模型「语音合成」时必填）
+   VOLC_ACCESS_TOKEN= 你的 Access Token           （用小模型「语音合成」时必填；大模型合成走 API Key 不需要）
    TTS_RESOURCE_ID  = seed-tts-1.0                （可选；默认 1.0 音色库，想用 2.0 新音色改为 seed-tts-2.0）
    ASR_RESOURCE_IDS = volc.bigasr.auc_turbo,volc.bigasr.auc （可选；服务器会按顺序自动尝试，哪个开通了用哪个。控制台叫法不同时把服务页显示的 Resource ID 填在最前面）
    TTS_DEFAULT_VOICE= zh_male_yuanboxiaoshu_moon_bigtts （可选，某位音色不可用时的兜底）
